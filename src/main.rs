@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use anyhow::Result;
 
 #[derive(Debug, Parser)]
 #[command(name = "git-timer")]
@@ -11,34 +12,48 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Starts timer
-    #[command()]
     Start {
         /// Timer's name
         timer_name: String,
     },
-    /// TODO
-    #[command()]
+    /// Show status
     Status,
     /// Commit and add timer data
-    #[command(arg_required_else_help = true)]
     Commit {
         /// Commit message
+        #[arg(short, long)]
         message: String,
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Cli::parse();
 
     match args.command {
         Commands::Start { timer_name } => {
-            println!("Started timer {timer_name}");
+            start_timer(&timer_name)?;
         },
         Commands::Status => {
-            println!("Status info");
+            show_status()?;
         },
         Commands::Commit { message } => {
-            println!("Ran command: git commit -m \"{message}\"");
+            commit_with_timer(&message)?;
         },
     }
+    Ok(())
+}
+
+fn start_timer(timer_name: &str) -> Result<()> {
+    println!("Started timer {timer_name}");
+    Ok(())
+}
+
+fn show_status() -> Result<()> {
+    println!("Status info");
+    Ok(())
+}
+
+fn commit_with_timer(message: &str) -> Result<()> {
+    println!("Ran command: git commit -m \"{message}\"");
+    Ok(())
 }
