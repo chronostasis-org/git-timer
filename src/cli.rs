@@ -1,4 +1,4 @@
-// src/cli.rs - Simple version
+// src/cli.rs
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -12,17 +12,14 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Starts timer
-    Start {
-        /// Timer's name
-        timer_name: String,
-    },
+    Start,
     /// Show status
     Status,
     /// Commit and add timer data
     Commit {
-        /// Commit message
+        /// Commit message (optional, opens editor if not provided)
         #[arg(short, long)]
-        message: String,
+        message: Option<String>,
     },
 }
 

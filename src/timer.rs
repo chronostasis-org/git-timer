@@ -1,3 +1,4 @@
+// src/timer.rs
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,6 @@ use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TimerData {
-    pub name: Option<String>,
     pub start: Option<DateTime<Local>>,
     pub end: Option<DateTime<Local>>,
 }
@@ -14,7 +14,6 @@ pub struct TimerData {
 impl TimerData {
     pub fn new() -> Self {
         TimerData {
-            name: None,
             start: None,
             end: None,
         }
@@ -22,6 +21,15 @@ impl TimerData {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         log::debug!("Saving timer data to {:?}", path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+                log::debug!("Created directory: {:?}", parent);
+            }
+        }
+
         let data = serde_json::to_string_pretty(&self)?;
         fs::write(path, &data)
             .with_context(|| format!("Failed to write timer data to {:?}", path))?;

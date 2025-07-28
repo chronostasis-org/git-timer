@@ -1,47 +1,49 @@
+// src/commands.rs
 use crate::storage;
 use crate::timer::TimerData;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Local;
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use tempfile::NamedTempFile;
 
-pub fn start_timer(timer_name: &str, timer_data: &mut TimerData, data_path: &Path) -> Result<()> {
-    log::info!("Starting timer '{}'", timer_name);
+pub fn start_timer(timer_data: &mut TimerData, data_path: &Path) -> Result<()> {
+    log::info!("Starting git-timer");
 
-    // Check if a timer is already running
+    // Exit if timer is already running
     if timer_data.is_running() {
-        // TODO: output warning and exit, do not overwrite running timer
-        log::warn!("Overwriting existing running timer");
+        let msg = format!(
+            "Timer is already running. Use 'git-timer status' to check or 'git-timer commit' to end it.",
+        );
+        log::warn!("{}", msg);
+        eprintln!("Error: {}", msg);
+        std::process::exit(1); // Exit with error code
     }
 
     let now = Local::now();
-    timer_data.name = Some(timer_name.to_owned());
     timer_data.start = Some(now);
     timer_data.end = None;
 
     timer_data.save(data_path)?;
-    // TODO: better output - coloring, etc
-    println!(
-        "Started timer '{}' at {}",
-        timer_name,
-        now.format("%H:%M:%S")
-    );
+    println!("git-timer: Started timer at {}", now.format("%H:%M:%S"));
     Ok(())
 }
 
 pub fn show_status(timer_data: &TimerData) -> Result<()> {
-    if let Some(name) = &timer_data.name {
+    if timer_data.start.is_some() {
         if timer_data.is_running() {
             if let Some((mins, secs)) = timer_data.calculate_duration() {
                 println!(
-                    "Timer '{}' has been running for {} minutes and {} seconds",
-                    name, mins, secs
+                    "Timer has been running for {} minutes and {} seconds",
+                    mins, secs
                 );
             }
         } else if timer_data.end.is_some() {
             if let Some((mins, secs)) = timer_data.calculate_duration() {
                 println!(
-                    "Timer '{}' has completed after {} minutes and {} seconds",
-                    name, mins, secs
+                    "Timer has completed after {} minutes and {} seconds",
+                    mins, secs
                 );
             }
         }
@@ -52,38 +54,102 @@ pub fn show_status(timer_data: &TimerData) -> Result<()> {
 }
 
 pub fn commit_with_timer(
-    message: &str,
+    message: Option<&str>,
     timer_data: &mut TimerData,
     data_path: &Path,
 ) -> Result<()> {
     log::info!("Committing with timer data");
 
-    // Check if a timer is actually running
+    // If timer is not running but has end time,
+    // it means a previous commit attempt failed but timer was stopped
     if !timer_data.is_running() {
-        log::warn!("No timer was running, creating implicit timer");
+        if timer_data.start.is_some() && timer_data.end.is_some() {
+            log::info!("Found stopped timer data from previous commit attempt");
+            println!("Reusing timer data from previous commit attempt");
+        } else {
+            // No usable timer data at all
+            log::warn!("No timer is currently running");
+            eprintln!("No timer is currently running");
+            std::process::exit(1);
+        }
+    } else {
+        // Timer is running, stop it now
+        let now = Local::now();
+        timer_data.end = Some(now);
+
+        // Save timer state before committing
+        timer_data.save(data_path)?;
     }
 
-    let now = Local::now();
-    timer_data.end = Some(now);
+    // Calculate timer duration - will work for both running and previously stopped timers
+    let timer_footer = if let Some((mins, secs)) = timer_data.calculate_duration() {
+        format!("\n\n[Timer: {} minutes {} seconds]", mins, secs)
+    } else {
+        "".to_string()
+    };
 
-    // Execute git command (this would be implemented to actually run git)
-    log::debug!("Running git command with message: {}", message);
-    println!("Running: git commit -m \"{}\"", message);
+    // Execute git commit command based on whether -m flag was used
+    match message {
+        Some(msg) => {
+            // -m flag was used, append timer data to message
+            let full_message = format!("{}{}", msg, timer_footer);
+            let output = Command::new("git")
+                .args(["commit", "-m", &full_message])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .with_context(|| "Failed to execute git commit command")?;
 
-    // Show timer results
-    if let Some((mins, secs)) = timer_data.calculate_duration() {
-        if let Some(name) = &timer_data.name {
-            println!(
-                "Timer '{}' stopped after {} minutes and {} seconds",
-                name, mins, secs
-            );
+            // Display git output
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+
+            if !output.status.success() {
+                return Err(anyhow::anyhow!("Git commit failed. Timer data preserved."));
+            }
+        }
+        None => {
+            // No -m flag, open editor with template containing timer footer
+            let mut temp_file = NamedTempFile::new()
+                .with_context(|| "Failed to create temporary commit template file")?;
+
+            // Write timer footer to template
+            writeln!(
+                temp_file,
+                "
+
+# Timer: {} minutes {} seconds
+#",
+                timer_footer
+                    .trim_start_matches("\n\n[Timer: ")
+                    .trim_end_matches("]")
+                    .split_once(' ')
+                    .unwrap_or(("0", "0 seconds"))
+                    .0,
+                timer_footer
+                    .trim_start_matches("\n\n[Timer: ")
+                    .trim_end_matches("]")
+                    .split_once(' ')
+                    .unwrap_or(("0", "0 seconds"))
+                    .1
+            )?;
+
+            // Set GIT_COMMIT_TEMPLATE environment variable
+            let template_path = temp_file.path().to_string_lossy().to_string();
+
+            // Call git commit with the template
+            let status = Command::new("git")
+                .args(["commit", "--template", &template_path])
+                .status()
+                .with_context(|| "Failed to execute git commit command")?;
+
+            if !status.success() {
+                return Err(anyhow::anyhow!("Git commit failed. Timer data preserved."));
+            }
         }
     }
 
-    // Save final state
-    timer_data.save(data_path)?;
-
-    // Clean up by removing the file
+    // Clean up by removing the file only after successful commit
     storage::remove_timer_file(data_path)?;
 
     Ok(())
